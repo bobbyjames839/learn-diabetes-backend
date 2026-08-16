@@ -642,6 +642,12 @@ def respond_stream(
         payload = parse_json_content(buffer)
     except LLMNotJSON as exc:
         text = _fallback_reply(exc.content)
+        # `partial_reply` never matched a `"reply":"` key in prose that was
+        # never JSON, so nothing has streamed yet — the fallback text is the
+        # whole reply and has to go out now, or the reader sees an empty
+        # message with a correct-looking object behind it.
+        if text and shown == 0:
+            yield "text", text
         yield "reply", ChatReply(reply=text) if text else None
         return
     yield "reply", parse_reply(payload)

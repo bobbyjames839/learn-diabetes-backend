@@ -546,15 +546,19 @@ class TestStreamingTurn:
         assert reply.check is None
 
     def test_a_wrapperless_stream_still_answers(self, monkeypatch):
-        # The model ignored the JSON wrapper entirely. Nothing streams — there
-        # is no `reply` key to read — but the prose is still worth showing.
+        # The model ignored the JSON wrapper entirely. `partial_reply` never
+        # matches a `"reply":"` key in plain prose, so nothing streams as it
+        # arrives — but the fallback text still has to reach the reader as a
+        # `text` event, not just ride along on the final `reply` object where
+        # nothing on the client would ever render it.
         prose = "You spotted the carb, and here's why that matters."
         monkeypatch.setattr(chat, "stream_json_chat", lambda *a, **k: iter([prose]))
         events = list(
             chat.respond_stream(LearnerProfile(), [], [Turn(role="user", content="hi")])
         )
-        assert [k for k, _ in events] == ["reply"]
-        assert events[0][1].reply == prose
+        assert [k for k, _ in events] == ["text", "reply"]
+        assert events[0][1] == prose
+        assert events[1][1].reply == prose
 
     def test_an_unusable_stream_yields_no_reply(self, monkeypatch):
         monkeypatch.setattr(chat, "stream_json_chat", lambda *a, **k: iter(['{"reply": ""}']))
