@@ -87,6 +87,10 @@ def main() -> int:
                         mark = "✓" if option.correct else " "
                         note = "" if option.correct else f"   ← {option.misconception}"
                         log.info("      %s %s%s", mark, option.text, note)
+                        # The coaching is the half a reader actually sees, and
+                        # the half most worth reading before it ships.
+                        if option.coaching:
+                            log.info("          “%s”", option.coaching)
                 continue
 
             if existing:

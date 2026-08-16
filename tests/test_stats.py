@@ -1,6 +1,6 @@
 from datetime import date
 
-from app.stats import compute_streak, percent
+from app.stats import FirstTry, compute_streak, percent, rank_trouble_spots
 
 
 def d(day: int) -> date:
@@ -37,3 +37,42 @@ def test_percent_rounds_and_handles_empty_curriculum():
     assert percent(1, 3) == 33
     assert percent(2, 3) == 67
     assert percent(5, 5) == 100
+
+
+def tries(slug: str, right: int, wrong: int) -> list[FirstTry]:
+    return [FirstTry(slug, slug.title(), "basics", True) for _ in range(right)] + [
+        FirstTry(slug, slug.title(), "basics", False) for _ in range(wrong)
+    ]
+
+
+def test_no_answers_means_no_trouble_spots():
+    assert rank_trouble_spots([]) == []
+
+
+def test_a_lesson_answered_perfectly_is_not_a_trouble_spot():
+    assert rank_trouble_spots(tries("carbs", right=4, wrong=0)) == []
+
+
+def test_counts_are_first_tries_asked_and_missed():
+    [spot] = rank_trouble_spots(tries("carbs", right=3, wrong=2))
+    assert (spot.lesson_slug, spot.asked, spot.missed) == ("carbs", 5, 2)
+
+
+def test_ranked_by_misses_not_by_hit_rate():
+    """One wrong answer out of one is noise; four out of eight is a weak area."""
+    spots = rank_trouble_spots(tries("insulin", 4, 4) + tries("ketones", 0, 1))
+    assert [s.lesson_slug for s in spots] == ["insulin", "ketones"]
+
+
+def test_equal_misses_break_on_proportion_then_title():
+    spots = rank_trouble_spots(tries("aaa", 8, 2) + tries("zzz", 0, 2) + tries("mmm", 0, 2))
+    assert [s.lesson_slug for s in spots] == ["mmm", "zzz", "aaa"]
+
+
+def test_only_the_worst_few_are_returned():
+    answers = [t for i in range(5) for t in tries(f"lesson{i}", 0, 5 - i)]
+    assert [s.lesson_slug for s in rank_trouble_spots(answers)] == [
+        "lesson0",
+        "lesson1",
+        "lesson2",
+    ]

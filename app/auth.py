@@ -16,8 +16,10 @@ from functools import lru_cache
 import jwt
 from fastapi import Depends, HTTPException, Request, status
 from jwt import PyJWKClient
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app import flashcards
 from app.config import get_settings
 from app.db import get_db
 from app.models import Profile
@@ -109,13 +111,36 @@ def get_current_user(
         raise CREDENTIALS_ERROR
 
     profile = db.get(Profile, user_id)
-    if profile is None:
-        # First request after signup — mirror the auth user into our own table.
-        profile = Profile(
+    if profile is not None:
+        return profile
+
+    # First request after signup — mirror the auth user into our own table.
+    #
+    # This runs concurrently with itself. The home page asks for /api/me and
+    # /api/stats in one `Promise.all`, so a brand new reader's *first* action is
+    # two simultaneous first-requests, both finding no profile and both trying
+    # to create one. Whoever loses that race used to get a duplicate-key 500 on
+    # the very first screen of the app.
+    db.add(
+        Profile(
             id=user_id,
             email=claims.get("email"),
             display_name=(claims.get("user_metadata") or {}).get("display_name"),
         )
-        db.add(profile)
+    )
+    try:
         db.commit()
+    except IntegrityError:
+        # The other request created it a moment ago. That is a success for this
+        # one: the profile exists, which is all it wanted. It must not seed the
+        # deck as well — the winner is doing that.
+        db.rollback()
+        profile = db.get(Profile, user_id)
+        if profile is None:
+            raise
+        logger.info("profile for %s was created concurrently", user_id)
+        return profile
+
+    profile = db.get(Profile, user_id)
+    flashcards.seed_default(db, profile.id)
     return profile

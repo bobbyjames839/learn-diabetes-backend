@@ -5,11 +5,20 @@ lesson. Its purpose is as much diagnostic as pedagogical: every wrong option
 carries the misconception a reader who picks it is holding, so an answer tells
 us *which* wrong model of glucose someone has, not merely that they missed one.
 
+Two things follow from the reader never seeing the section while they answer.
+A question that could be answered by scanning the text for a matching phrase is
+worthless here, so checkpoints are transfer questions — a new situation, and a
+prediction to make. And a wrong answer is a teaching moment rather than a score,
+so every wrong option also carries `coaching`: what the teacher says back to
+someone holding that particular misconception, before letting them try again.
+
 The prompt and the validation live here, apart from the HTTP call, so both can
 be tested without a network.
 """
 
 from __future__ import annotations
+
+import random
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
@@ -20,7 +29,8 @@ from app.sections import Section
 # "how much insulin would you take here?" would be a dosing suggestion wearing a
 # quiz's clothes, so the rule is restated for the generator.
 SYSTEM_PROMPT = """\
-You write diagnostic comprehension checks for a type 1 diabetes education app.
+You are a patient diabetes educator writing the questions you ask a learner
+partway through a lesson, to find out whether the idea actually landed.
 
 You will be given one lesson, already split into numbered sections. Write exactly
 one multiple-choice question per section, testing the idea that section teaches.
@@ -32,16 +42,31 @@ Hard safety rules — these override everything else:
 - Any numbers are illustrative and belong to a hypothetical person.
 - Never imply the reader should act on an answer without their diabetes team.
 
-Question rules:
-- Answerable from that section alone. Do not require outside knowledge.
-- Test comprehension, not recall of a specific number or phrase.
+The reader CANNOT see the section while they answer it. This changes everything:
+- A question answerable by scanning the text for a matching phrase is a failed
+  question. Never quote the section's wording in the prompt or the right option.
+- Instead, put the reader in a short concrete situation — a hypothetical person,
+  a time of day, something they ate or did — and ask them to PREDICT or EXPLAIN
+  what glucose does and why. Transfer, not recall.
+- The situation must be NEW. If the section works through an example, change the
+  food, the timing, or the circumstance, so remembering the outcome doesn't
+  substitute for understanding the mechanism.
+- Two or three sentences of setup at most, then the question.
+- It must still be answerable from that section alone. No outside knowledge.
+
+Options:
 - 3 or 4 options. Exactly one is correct.
 - Every incorrect option must be a genuinely tempting misconception a real
   learner holds — never filler, never obviously absurd.
-- For each incorrect option, state the misconception it reveals in a short
-  lowercase phrase (e.g. "thinks the liver only releases glucose after meals").
-- The explanation says why the right answer is right, in one or two sentences,
-  addressed to the reader as "you".
+- "misconception": the wrong model that option reveals, as a short lowercase
+  phrase (e.g. "thinks the liver only releases glucose after meals").
+- "coaching": what you say back to a reader who just picked that option. One or
+  two sentences, addressed to them as "you". Correct THAT specific wrong model —
+  name the thinking, don't just say they're wrong. They get another attempt right
+  after reading it, so coaching must NOT reveal, name, or describe the correct
+  option. Point at the reasoning, not the answer.
+- "explanation": why the right answer is right, one or two sentences, addressed
+  as "you". Shown only once the checkpoint is settled.
 - "concept" is a short kebab-case tag for the idea being tested
   (e.g. "liver-glucose-output"). Reuse a natural tag if two lessons test the
   same idea.
@@ -49,22 +74,30 @@ Question rules:
 Return JSON of exactly this shape and nothing else:
 {"questions": [{"section_index": 0, "concept": "kebab-case-tag",
   "prompt": "...", "explanation": "...",
-  "options": [{"text": "...", "correct": true, "misconception": null},
-              {"text": "...", "correct": false, "misconception": "..."}]}]}
+  "options": [{"text": "...", "correct": true, "misconception": null,
+               "coaching": null},
+              {"text": "...", "correct": false, "misconception": "...",
+               "coaching": "..."}]}]}
 """
 
 
 class GeneratedOption(BaseModel):
     text: str = Field(min_length=1, max_length=400)
     correct: bool = False
+    # What this wrong turn tells us about the reader — recorded, never shown.
     misconception: str | None = Field(default=None, max_length=300)
+    # What the teacher says back to them — shown, never recorded.
+    coaching: str | None = Field(default=None, max_length=600)
 
     @model_validator(mode="after")
-    def _misconception_only_on_wrong_answers(self) -> GeneratedOption:
+    def _wrong_answers_carry_both_halves(self) -> GeneratedOption:
         if not self.correct and not self.misconception:
             raise ValueError("every incorrect option must name the misconception it reveals")
+        if not self.correct and not self.coaching:
+            raise ValueError("every incorrect option must carry the coaching for that misconception")
         if self.correct:
             self.misconception = None
+            self.coaching = None
         return self
 
 
@@ -130,6 +163,19 @@ def parse_questions(payload: dict, section_count: int) -> list[GeneratedQuestion
     return [seen[i] for i in sorted(seen)]
 
 
+def shuffle_options(questions: list[GeneratedQuestion]) -> list[GeneratedQuestion]:
+    """Randomise each question's option order in place.
+
+    Models have a strong bias toward writing the correct option first — leaving
+    that order as-is would turn every checkpoint into "pick option A". The
+    shuffle happens once, here, before a question is ever stored, so it's the
+    same order for every reader rather than reshuffled per view.
+    """
+    for question in questions:
+        random.shuffle(question.options)
+    return questions
+
+
 def generate(
     title: str, summary: str, sections: list[Section], *, model: str | None = None
 ) -> list[GeneratedQuestion]:
@@ -137,4 +183,4 @@ def generate(
     payload = complete_json(
         SYSTEM_PROMPT, build_user_prompt(title, summary, sections), model=model
     )
-    return parse_questions(payload, len(sections))
+    return shuffle_options(parse_questions(payload, len(sections)))

@@ -9,7 +9,7 @@ from app.config import get_settings
 from app.db import SessionLocal
 from app.llm import is_configured
 from app.models import Lesson, LessonQuestion
-from app.routers import lessons, profile, questions, stats
+from app.routers import chat, coach, lessons, profile, questions, stats
 
 logging.basicConfig(level=logging.INFO)
 
@@ -29,6 +29,8 @@ app.include_router(profile.router, prefix="/api", tags=["profile"])
 app.include_router(lessons.router, prefix="/api", tags=["lessons"])
 app.include_router(questions.router, prefix="/api", tags=["questions"])
 app.include_router(stats.router, prefix="/api", tags=["stats"])
+app.include_router(coach.router, prefix="/api", tags=["coach"])
+app.include_router(chat.router, prefix="/api", tags=["chat"])
 
 
 @app.get("/api/health")

@@ -19,7 +19,17 @@ class Settings(BaseSettings):
     # simply read as before, with no checkpoints.
     openrouter_api_key: str = ""
     question_model: str = "anthropic/claude-sonnet-4.5"
+    # The chatbot answers while someone waits, so it gets its own setting — a
+    # faster model is worth more here than in the build-step generators.
+    chat_model: str = "anthropic/claude-sonnet-4.5"
     llm_timeout_seconds: float = 90.0
+    # Generous headroom over the worst case a reply can validate as: a 4000-char
+    # "reply" plus a four-option "check" whose options and responses run to 600
+    # chars each is ~8000 characters of JSON. Left unset, the provider's own
+    # default applies instead — small enough that a full reply-plus-check can be
+    # cut off mid-object, which leaves no closing brace for either JSON parser
+    # to find and turns a normal-length answer into a 503.
+    llm_max_tokens: int = 4000
 
     cors_origins: str = "http://localhost:5173"
 
