@@ -1,0 +1,26 @@
+[project]
+name = "learn-diabetes-backend"
+version = "0.1.0"
+description = "Lesson-and-practice backend for the type 1 diabetes learning app"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "sqlalchemy>=2.0.36",
+    "psycopg[binary]>=3.2",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "pyjwt[crypto]>=2.9",
+    "python-dotenv>=1.0",
+    "httpx>=0.28.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "httpx>=0.28",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
