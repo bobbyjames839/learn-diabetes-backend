@@ -1,3 +1,4 @@
+import json
 from typing import get_args
 
 import app.chat as chat
@@ -448,3 +449,114 @@ class TestJSONFallback:
         )
         assert open_session(LearnerProfile(), []) is None
         assert respond(LearnerProfile(), [], [Turn(role="user", content="hi")]) is None
+
+
+class TestStreamingTurn:
+    """`respond_stream` is `respond` with the prose arriving early.
+
+    The contract that matters: the text it yields, concatenated, is the same
+    text the reply ends up carrying, and every attachment still goes through
+    `parse_reply` at the end rather than being trusted mid-flight.
+    """
+
+    @staticmethod
+    def _drain(monkeypatch, payload: str, size: int = 5):
+        """Run a turn against a canned payload, chopped into chunks."""
+        chunks = [payload[i : i + size] for i in range(0, len(payload), size)]
+        monkeypatch.setattr(chat, "stream_json_chat", lambda *a, **k: iter(chunks))
+        text, reply = "", None
+        for kind, value in chat.respond_stream(
+            LearnerProfile(), [], [Turn(role="user", content="an apple")]
+        ):
+            if kind == "text":
+                text += value
+            else:
+                reply = value
+        return text, reply
+
+    def test_streams_the_reply_and_parses_the_whole_turn(self, monkeypatch):
+        payload = json.dumps(
+            {"reply": "Porridge releases slower than juice.", "wrap_up": False}
+        )
+        text, reply = self._drain(monkeypatch, payload)
+        assert text == "Porridge releases slower than juice."
+        assert reply is not None
+        assert reply.reply == "Porridge releases slower than juice."
+
+    def test_the_streamed_text_matches_the_parsed_reply(self, monkeypatch):
+        payload = json.dumps({"reply": 'She said "slower" — and a café.'})
+        text, reply = self._drain(monkeypatch, payload, size=3)
+        assert reply is not None
+        assert text == reply.reply
+
+    def test_a_check_survives_the_stream(self, monkeypatch):
+        payload = json.dumps(
+            {
+                "reply": "Have a go at this.",
+                "check": {
+                    "question": "Which rises faster?",
+                    "options": [
+                        {"text": "Juice", "correct": True, "response": "Yes — it's liquid sugar."},
+                        {"text": "Porridge", "correct": False, "response": "Slower, in fact."},
+                    ],
+                },
+            }
+        )
+        text, reply = self._drain(monkeypatch, payload)
+        assert text == "Have a go at this."
+        assert reply is not None and reply.check is not None
+        assert reply.check.question == "Which rises faster?"
+
+    def test_a_check_still_cancels_a_wrap_up(self, monkeypatch):
+        # The same rule `parse_reply` enforces on the blocking path: a turn that
+        # sets another task is not a turn that ends the session.
+        payload = json.dumps(
+            {
+                "reply": "One more.",
+                "wrap_up": True,
+                "check": {
+                    "question": "Which rises faster?",
+                    "options": [
+                        {"text": "Juice", "correct": True, "response": "Yes."},
+                        {"text": "Porridge", "correct": False, "response": "Slower."},
+                    ],
+                },
+            }
+        )
+        _, reply = self._drain(monkeypatch, payload)
+        assert reply is not None and reply.check is not None
+        assert reply.wrap_up is False
+
+    def test_an_unsafe_check_is_still_dropped(self, monkeypatch):
+        payload = json.dumps(
+            {
+                "reply": "Think it through.",
+                "check": {
+                    "question": "How many units should you take for 60g?",
+                    "options": [
+                        {"text": "4 units", "correct": True, "response": "Right."},
+                        {"text": "2 units", "correct": False, "response": "Not enough."},
+                    ],
+                },
+            }
+        )
+        text, reply = self._drain(monkeypatch, payload)
+        assert text == "Think it through."
+        assert reply is not None
+        assert reply.check is None
+
+    def test_a_wrapperless_stream_still_answers(self, monkeypatch):
+        # The model ignored the JSON wrapper entirely. Nothing streams — there
+        # is no `reply` key to read — but the prose is still worth showing.
+        prose = "You spotted the carb, and here's why that matters."
+        monkeypatch.setattr(chat, "stream_json_chat", lambda *a, **k: iter([prose]))
+        events = list(
+            chat.respond_stream(LearnerProfile(), [], [Turn(role="user", content="hi")])
+        )
+        assert [k for k, _ in events] == ["reply"]
+        assert events[0][1].reply == prose
+
+    def test_an_unusable_stream_yields_no_reply(self, monkeypatch):
+        monkeypatch.setattr(chat, "stream_json_chat", lambda *a, **k: iter(['{"reply": ""}']))
+        _, reply = self._drain(monkeypatch, '{"reply": ""}')
+        assert reply is None

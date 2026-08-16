@@ -23,15 +23,17 @@ background courtesy, and a failure there costs nothing worth reporting.
 from __future__ import annotations
 
 import logging
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import chat, chat_cards, chat_summary, flashcards, mastery
+from app import aisdk, chat, chat_cards, chat_summary, flashcards, mastery
 from app.auth import get_current_user
 from app.config import get_settings
-from app.db import get_db
+from app.db import SessionLocal, get_db
 from app.llm import LLMError, is_configured
 from app.models import ChatCard, ChatSession, LessonProgress, Profile
 from app.routers.coach import recorded_history
@@ -40,11 +42,12 @@ from app.schemas import (
     ChatCheckOut,
     ChatEndIn,
     ChatEndOut,
-    ChatIn,
     ChatOut,
     ChatSessionOut,
     ChatStartIn,
+    ChatStreamIn,
     ChatTurn,
+    ProfileOut,
     SessionBriefIn,
 )
 
@@ -127,62 +130,141 @@ def start_chat(
     return ChatOut(reply=opening)
 
 
-@router.post("/chat", response_model=ChatOut)
+def _check_out(reply: chat.ChatReply) -> ChatCheckOut | None:
+    if not reply.check:
+        return None
+    return ChatCheckOut(
+        question=reply.check.question,
+        options=[
+            ChatCheckOptionOut(text=o.text, correct=o.correct, response=o.response)
+            for o in reply.check.options
+        ],
+    )
+
+
+def _write_profile_update(user_id, update: chat.ProfileUpdate) -> Profile | None:
+    """Apply a revision the tutor made mid-conversation, on its own session.
+
+    Its own, because this runs inside the streaming generator, by which point
+    the request's injected session has already been closed — FastAPI tears
+    dependencies down before the response body is consumed. The write is rare
+    and small, so a short session of its own costs nothing and keeps the
+    lifetime obvious.
+
+    Validated to the same closed option sets the onboarding quiz uses, so what
+    lands here is always a value the reader could have picked themselves.
+    """
+    fields = update.fields()
+    with SessionLocal() as db:
+        profile = db.get(Profile, user_id)
+        if profile is None:
+            return None
+        for field, value in fields.items():
+            setattr(profile, f"onboarding_{field}", value)
+        db.commit()
+        db.refresh(profile)
+        log.info("chat revised profile for %s: %s", user_id, fields)
+        return profile
+
+
+@router.post("/chat")
 def chat_turn(
-    payload: ChatIn,
+    payload: ChatStreamIn,
     profile: Profile = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> ChatOut:
-    """One turn of a teaching conversation.
+) -> StreamingResponse:
+    """One turn of a teaching conversation, streamed.
 
-    Reads the profile and their recorded answers. May write the profile — the
-    only write on this path, and a rare one.
+    The tutor is the only screen where the reader waits on the model with
+    nothing to read, so this is the one endpoint that streams. It speaks the AI
+    SDK's data stream protocol (`app/aisdk.py`) and the client is `useChat`,
+    which is what the SDK is genuinely good at: the in-flight message, the
+    abort, the error state, all handled.
+
+    The prose goes out as it is written. Everything else the turn carries — the
+    check, the wrap-up proposal, the profile revision — is a `data-*` part sent
+    once the object has closed and `chat.parse_reply` has passed it, because
+    none of them is meaningful half-arrived.
+
+    Reads happen here, before the stream opens, while the request's database
+    session is still alive. The one write on this path opens its own.
     """
     if not is_configured():
         raise HTTPException(status_code=503, detail=UNAVAILABLE)
 
-    # Only what's on record: a chat session has no in-flight lesson attempts to
+    # Read eagerly: by the time the generator below runs, `db` is closed.
+    # Only what's on record — a chat session has no in-flight lesson attempts to
     # be told about, so unlike the coach there is nothing client-side to merge in.
+    learner = _learner(db, profile)
     history = recorded_history(db, profile.id)
+    transcript = [chat.Turn(role=m.role, content=m.text()) for m in payload.messages if m.text()]
+    brief = _brief(payload.brief)
+    user_id = profile.id
+    model = get_settings().chat_model
 
-    try:
-        reply = chat.respond(
-            _learner(db, profile),
-            history,
-            _transcript(payload.messages),
-            brief=_brief(payload.brief),
-            model=get_settings().chat_model,
-        )
-    except LLMError as exc:
-        log.info("chat turn failed for %s: %s", profile.id, exc)
-        raise HTTPException(status_code=503, detail=UNAVAILABLE) from None
+    if not transcript:
+        raise HTTPException(status_code=422, detail="Nothing to reply to.")
 
-    if reply is None:
-        raise HTTPException(status_code=503, detail=UNAVAILABLE)
+    def stream():
+        message_id = f"msg_{uuid4().hex}"
+        yield aisdk.sse({"type": "start", "messageId": message_id})
+        yield aisdk.sse({"type": "text-start", "id": message_id})
 
-    updated = None
-    if reply.profile_update:
-        # Validated to the same closed option sets the onboarding quiz uses, so
-        # what lands here is always a value the reader could have picked
-        # themselves — see `chat.ProfileUpdate`.
-        for field, value in reply.profile_update.fields().items():
-            setattr(profile, f"onboarding_{field}", value)
-        db.commit()
-        db.refresh(profile)
-        updated = profile
-        log.info("chat revised profile for %s: %s", profile.id, reply.profile_update.fields())
+        reply: chat.ChatReply | None = None
+        try:
+            for kind, value in chat.respond_stream(
+                learner, history, transcript, brief=brief, model=model
+            ):
+                if kind == "text":
+                    yield aisdk.sse(
+                        {"type": "text-delta", "id": message_id, "delta": value}
+                    )
+                else:
+                    reply = value
+        except LLMError as exc:
+            # Mid-stream, so this cannot be a 503: the status line went out with
+            # the first byte. The protocol carries the failure instead, and
+            # `useChat` surfaces it the same way it would a rejected request.
+            log.info("chat turn failed for %s: %s", user_id, exc)
+            yield aisdk.sse({"type": "error", "errorText": UNAVAILABLE})
+            yield aisdk.sse({"type": "text-end", "id": message_id})
+            yield aisdk.sse({"type": "finish"})
+            yield aisdk.done()
+            return
 
-    check = None
-    if reply.check:
-        check = ChatCheckOut(
-            question=reply.check.question,
-            options=[
-                ChatCheckOptionOut(text=o.text, correct=o.correct, response=o.response)
-                for o in reply.check.options
-            ],
-        )
+        yield aisdk.sse({"type": "text-end", "id": message_id})
 
-    return ChatOut(reply=reply.reply, check=check, profile=updated, wrap_up=reply.wrap_up)
+        if reply is None:
+            yield aisdk.sse({"type": "error", "errorText": UNAVAILABLE})
+        else:
+            check = _check_out(reply)
+            if check:
+                yield aisdk.data_part("check", check.model_dump())
+            if reply.wrap_up:
+                yield aisdk.data_part("wrap-up", {"wrap_up": True})
+            if reply.profile_update:
+                updated = _write_profile_update(user_id, reply.profile_update)
+                if updated is not None:
+                    yield aisdk.data_part(
+                        "profile",
+                        ProfileOut.model_validate(updated, from_attributes=True).model_dump(
+                            mode="json"
+                        ),
+                    )
+
+        yield aisdk.sse({"type": "finish"})
+        yield aisdk.done()
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            **aisdk.STREAM_HEADER,
+            # Streaming dies behind a proxy that buffers it.
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 def _session_summary(payload: ChatEndIn, model: str) -> chat_summary.GeneratedSummary:

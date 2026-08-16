@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Iterator
 
 import httpx
 
@@ -145,6 +146,17 @@ def complete_json_chat(
     except (KeyError, IndexError) as exc:
         raise LLMError("The model returned an unexpected response shape.") from exc
 
+    return parse_json_content(content, body.get("choices", [{}])[0].get("finish_reason"))
+
+
+def parse_json_content(content: str, finish_reason: str | None = None) -> dict:
+    """The model's raw text, as the JSON object it was asked for.
+
+    Split out from the call itself because the streaming path assembles the same
+    text a chunk at a time and needs the identical forgiveness at the end of it:
+    the fences, the trailing commentary, and the distinction between a reply that
+    was cut off and one that simply ignored the wrapper.
+    """
     stripped = _FENCE.sub("", content)
     try:
         return json.loads(stripped)
@@ -161,11 +173,10 @@ def complete_json_chat(
         except json.JSONDecodeError:
             pass
 
-    finish_reason = body.get("choices", [{}])[0].get("finish_reason")
     if finish_reason == "length":
         log.warning(
             "model reply hit max_tokens (%s) and was cut off: %s",
-            settings.llm_max_tokens,
+            get_settings().llm_max_tokens,
             content[:300],
         )
         raise LLMError("The model's reply was cut short.")
@@ -174,3 +185,77 @@ def complete_json_chat(
         "model did not return JSON (finish_reason=%s): %s", finish_reason, content[:300]
     )
     raise LLMNotJSON("The model did not return valid JSON.", content)
+
+
+def stream_json_chat(
+    system: str,
+    messages: list[dict],
+    *,
+    model: str | None = None,
+    temperature: float = 0.3,
+) -> Iterator[str]:
+    """`complete_json_chat`, one chunk at a time.
+
+    Yields the raw text as the provider sends it — still JSON, still unparsed.
+    Assembling it is the caller's job, because the caller is the only thing that
+    knows the object's shape and which field is the part worth showing early.
+
+    The same call as the blocking version with `stream: true` added, so a failure
+    reads the same way: unreachable, too slow, and refused all raise `LLMError`,
+    and a reply cut off by `max_tokens` raises at the end of the stream rather
+    than being handed back half-parsed.
+    """
+    settings = get_settings()
+    if not settings.openrouter_api_key:
+        raise LLMNotConfigured("OPENROUTER_API_KEY is not set.")
+
+    payload = {
+        "model": model or settings.question_model,
+        "messages": [{"role": "system", "content": system}, *messages],
+        "temperature": temperature,
+        "response_format": {"type": "json_object"},
+        "max_tokens": settings.llm_max_tokens,
+        "stream": True,
+    }
+
+    finish_reason: str | None = None
+    try:
+        with httpx.stream(
+            "POST",
+            _ENDPOINT,
+            json=payload,
+            timeout=settings.llm_timeout_seconds,
+            headers={
+                "Authorization": f"Bearer {settings.openrouter_api_key}",
+                "Content-Type": "application/json",
+            },
+        ) as response:
+            response.raise_for_status()
+            for line in response.iter_lines():
+                if not line.startswith("data: "):
+                    continue
+                body = line[6:].strip()
+                if body == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(body)
+                except json.JSONDecodeError:
+                    # Providers send comment and keep-alive lines through the
+                    # same channel. Not our JSON, not an error.
+                    continue
+                choice = (chunk.get("choices") or [{}])[0]
+                finish_reason = choice.get("finish_reason") or finish_reason
+                delta = (choice.get("delta") or {}).get("content")
+                if delta:
+                    yield delta
+    except httpx.TimeoutException as exc:
+        raise LLMError("The model took too long to respond.") from exc
+    except httpx.HTTPStatusError as exc:
+        log.warning("openrouter returned %s while streaming", exc.response.status_code)
+        raise LLMError(f"The model provider returned {exc.response.status_code}.") from exc
+    except httpx.HTTPError as exc:
+        raise LLMError("Could not reach the model provider.") from exc
+
+    if finish_reason == "length":
+        log.warning("streamed reply hit max_tokens (%s)", settings.llm_max_tokens)
+        raise LLMError("The model's reply was cut short.")

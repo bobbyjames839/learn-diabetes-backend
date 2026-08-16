@@ -23,14 +23,22 @@ tested without a network — the same split as question_gen.py and coach.py.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import get_args
 
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from app import mastery
+from app.aisdk import partial_reply
 from app.coach import PastAnswer
-from app.llm import LLMNotJSON, clean_model_text, complete_json_chat
+from app.llm import (
+    LLMNotJSON,
+    clean_model_text,
+    complete_json_chat,
+    parse_json_content,
+    stream_json_chat,
+)
 from app.safety import looks_like_dose_question, looks_like_dosing
 from app.schemas import (
     OnboardingContentPreference,
@@ -588,3 +596,52 @@ def respond(
         text = _fallback_reply(exc.content)
         return ChatReply(reply=text) if text else None
     return parse_reply(payload)
+
+
+def respond_stream(
+    profile: LearnerProfile,
+    history: list[PastAnswer],
+    transcript: list[Turn],
+    *,
+    brief: SessionBrief | None = None,
+    model: str | None = None,
+) -> Iterator[tuple[str, object]]:
+    """`respond`, as it arrives. Raises LLMError, like its blocking twin.
+
+    Yields `("text", delta)` for each new stretch of the reply as the model
+    writes it, then exactly one `("reply", ChatReply | None)` at the end. The
+    two-stage shape is the honest one: the prose can be shown a word at a time,
+    and nothing else in the turn means anything until the JSON object closes —
+    a check is not a check until its options have all arrived, and a wrap-up
+    proposal read early would be a false ending.
+
+    The text is streamed raw and validated afterwards, so `parse_reply` still
+    decides what the turn *was*. That leaves one thing it can no longer take
+    back: text already on the reader's screen. It rejects a whole reply only
+    when the model returns something unusable, in which case the caller sends
+    an error part and the client discards the message it was building.
+    """
+    buffer = ""
+    shown = 0
+    for delta in stream_json_chat(
+        build_system_prompt(profile, history, brief),
+        build_messages(transcript),
+        model=model,
+        temperature=0.7,
+    ):
+        buffer += delta
+        # What the reply field holds so far, not what the provider just sent:
+        # a chunk may be all punctuation and braces, or may complete an escape
+        # begun in the last one.
+        text = partial_reply(buffer)
+        if len(text) > shown:
+            yield "text", text[shown:]
+            shown = len(text)
+
+    try:
+        payload = parse_json_content(buffer)
+    except LLMNotJSON as exc:
+        text = _fallback_reply(exc.content)
+        yield "reply", ChatReply(reply=text) if text else None
+        return
+    yield "reply", parse_reply(payload)

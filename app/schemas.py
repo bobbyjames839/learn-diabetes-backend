@@ -238,12 +238,40 @@ class ChatStartIn(BaseModel):
     brief: SessionBriefIn = Field(default_factory=SessionBriefIn)
 
 
-class ChatIn(BaseModel):
-    # The conversation so far, ending with the reader's new message.
-    messages: list[ChatTurn] = Field(min_length=1, max_length=80)
-    # Carried on every turn, not just the first. The brief is what keeps a
-    # session on the subject the reader chose — sent once, it would be forty
-    # turns behind by the end and stop meaning anything.
+class UIMessagePart(BaseModel):
+    """One part of an AI SDK message. Only text parts carry conversation."""
+
+    type: str
+    text: str | None = None
+
+
+class UIMessage(BaseModel):
+    """A message in the shape `useChat` sends it.
+
+    The AI SDK models a message as a list of parts rather than a string, because
+    a single turn can carry prose, tool calls and custom data at once. The tutor
+    only ever reads the prose back — the `data-*` parts it emits are for the
+    screen, not for the next prompt — so this flattens to the same `ChatTurn`
+    the non-streaming path has always used.
+    """
+
+    role: Literal["user", "assistant", "system"]
+    parts: list[UIMessagePart] = Field(default_factory=list)
+
+    def text(self) -> str:
+        return "".join(p.text or "" for p in self.parts if p.type == "text").strip()
+
+
+class ChatStreamIn(BaseModel):
+    """The streaming turn's body: `useChat`'s messages, plus our own brief.
+
+    `useChat` sends `messages` and merges anything else the transport adds, so
+    the brief rides along on every turn exactly as it did before the endpoint
+    streamed: sent once, it would be forty turns behind by the end and stop
+    meaning anything.
+    """
+
+    messages: list[UIMessage] = Field(min_length=1, max_length=80)
     brief: SessionBriefIn = Field(default_factory=SessionBriefIn)
 
 
