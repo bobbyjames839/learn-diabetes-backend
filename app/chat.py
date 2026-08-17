@@ -39,7 +39,7 @@ from app.llm import (
     parse_json_content,
     stream_json_chat,
 )
-from app.safety import looks_like_dose_question, looks_like_dosing
+from app.safety import looks_like_dose_question, looks_like_dosing, looks_like_dosing_instruction
 from app.schemas import (
     OnboardingContentPreference,
     OnboardingFocus,
@@ -540,11 +540,16 @@ def _fallback_reply(content: str) -> str | None:
 
     The wrapper is a mechanism, not the answer someone was waiting for, so the
     prose underneath is still worth showing rather than discarding as a 503.
-    It skips the schema that normally carries the safety check on a "check",
-    so it gets the same dosing check a check's text gets before it is trusted.
+    It gets a dosing check, but the stricter one: `looks_like_dosing` is tuned
+    for the schema's own structured, single-focus strings — a check's question
+    or one option's text — and run across a whole multi-sentence reply it
+    flags ordinary sentences like "you take insulin because your pancreas
+    cannot make its own." `looks_like_dosing_instruction` requires an actual
+    number next to the amount, which is what tells "take 3 units" apart from
+    a mechanism explanation that only mentions insulin.
     """
     text = clean_model_text(content, strip_emphasis=False)
-    if not text or looks_like_dosing(text):
+    if not text or looks_like_dosing_instruction(text):
         return None
     return text[:MAX_REPLY_LENGTH]
 

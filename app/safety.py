@@ -76,3 +76,29 @@ def looks_like_dose_question(text: str) -> bool:
     questions can afford that.
     """
     return looks_like_dosing(text) or bool(_DOSE_QUESTION.search(text))
+
+
+# A number right next to the amount word — "3 units", "a couple more units" —
+# is what actually separates a dosing instruction from a mechanism sentence
+# that only *mentions* insulin. "you take insulin because your pancreas can't"
+# matches _DOSING's verb-then-amount shape with no number in sight; "take
+# about 3 units" does. Used only for free-form paragraphs (the chat fallback
+# reply), where _DOSING alone is too eager — an explanation of basal vs. bolus
+# insulin is made of the same words as an instruction to change either one.
+# The two structured, single-focus callers (a check's option text, a card)
+# keep using the more trigger-happy `looks_like_dosing` — being eager there
+# costs one fewer check or card, not a whole reply.
+_AMOUNT_WITH_NUMBER = re.compile(
+    rf"\b(?:{_VERB})\b[^.?!]{{0,60}}\d[^.?!]{{0,20}}\b(?:{_AMOUNT})\b|"
+    rf"\d[^.?!]{{0,20}}\b(?:{_AMOUNT})\b[^.?!]{{0,60}}\b(?:{_VERB})\b",
+    re.IGNORECASE,
+)
+
+
+def looks_like_dosing_instruction(text: str) -> bool:
+    """A stricter dosing check for whole paragraphs of free-form prose.
+
+    Requires an actual number next to the amount word, not just the verb and
+    the amount somewhere in the same sentence. See `_AMOUNT_WITH_NUMBER`.
+    """
+    return bool(_AMOUNT_WITH_NUMBER.search(text))
