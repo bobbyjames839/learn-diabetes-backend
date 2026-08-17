@@ -28,6 +28,23 @@ class TestParseCards:
         cards = parse_cards({"cards": [card(), card(front=card()["front"].upper())]})
         assert len(cards) == 1
 
+    def test_drops_a_repeat_of_a_card_from_an_earlier_session(self):
+        # The same weak spot, a different session, the model reaching for the
+        # same question again — this is the duplicate a reader would see.
+        existing = [card()["front"]]
+        cards = parse_cards({"cards": [card()]}, existing_fronts=existing)
+        assert cards == []
+
+    def test_a_repeat_is_caught_case_insensitively(self):
+        existing = [card()["front"].upper()]
+        cards = parse_cards({"cards": [card()]}, existing_fronts=existing)
+        assert cards == []
+
+    def test_a_genuinely_new_card_is_unaffected_by_old_ones(self):
+        existing = ["Why does exercise cause a high instead?"]
+        cards = parse_cards({"cards": [card()]}, existing_fronts=existing)
+        assert len(cards) == 1
+
     def test_drops_a_card_that_is_missing_a_side(self):
         assert parse_cards({"cards": [card(back="   ")]}) == []
 
@@ -74,3 +91,17 @@ class TestPrompt:
         )
         assert "LEARNER: why do I go low after football?" in prompt
         assert "YOU: Muscles keep pulling glucose in afterwards." in prompt
+
+    def test_names_cards_the_reader_already_has(self):
+        prompt = build_user_prompt(
+            [Turn(role="user", content="why do I go low after football?")],
+            existing_fronts=["Why does exercise cause a low hours later?"],
+        )
+        assert "Why does exercise cause a low hours later?" in prompt
+        assert "already have" in prompt.lower()
+
+    def test_says_nothing_extra_with_no_history(self):
+        prompt = build_user_prompt(
+            [Turn(role="user", content="why do I go low after football?")]
+        )
+        assert "already have" not in prompt.lower()

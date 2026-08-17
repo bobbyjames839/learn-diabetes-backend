@@ -95,13 +95,27 @@ class GeneratedCardSet(BaseModel):
     cards: list[dict] = Field(default_factory=list)
 
 
-def build_user_prompt(transcript: list[Turn]) -> str:
-    """The conversation, laid out so the two speakers are unambiguous."""
+def build_user_prompt(transcript: list[Turn], existing_fronts: list[str] = ()) -> str:
+    """The conversation, laid out so the two speakers are unambiguous.
+
+    `existing_fronts` are this reader's cards from earlier sessions — a card
+    authored once in a conversation is kept forever (see module docstring), so
+    a recurring confusion needs telling apart from one already on record rather
+    than written again in slightly different words.
+    """
     parts = ["--- THE CONVERSATION ---"]
     for turn in transcript:
         speaker = "LEARNER" if turn.role == "user" else "YOU"
         parts.append(f"{speaker}: {turn.content}")
     parts.append("")
+    if existing_fronts:
+        parts.append("--- CARDS THEY ALREADY HAVE, FROM EARLIER SESSIONS ---")
+        parts.extend(f"- {front}" for front in existing_fronts)
+        parts.append("")
+        parts.append(
+            "Do not write a card that repeats one of those, even in different words. "
+            "Only write one if this conversation showed a genuinely different confusion."
+        )
     parts.append(
         f"Write at most {MAX_CARDS} cards, only for things they genuinely "
         "struggled with. Return an empty list if there were none."
@@ -109,12 +123,17 @@ def build_user_prompt(transcript: list[Turn]) -> str:
     return "\n".join(parts)
 
 
-def parse_cards(payload: dict) -> list[GeneratedCard]:
+def parse_cards(payload: dict, existing_fronts: list[str] = ()) -> list[GeneratedCard]:
     """Validate a model reply into cards fit to store.
 
     Everything here degrades to fewer cards rather than an error: an unusable
     reply means the session leaves no cards behind, which is the same outcome
     as a conversation that produced none, and no reader ever needs to be told.
+
+    `existing_fronts` backstops the prompt's own instruction not to repeat a
+    card the reader already has: the model is asked nicely, but a chat_gap
+    card is never revisited once written, so a near-identical one slipping
+    through would sit in the deck as a duplicate forever.
     """
     try:
         parsed = GeneratedCardSet.model_validate(payload)
@@ -122,7 +141,7 @@ def parse_cards(payload: dict) -> list[GeneratedCard]:
         return []
 
     kept: list[GeneratedCard] = []
-    seen: set[str] = set()
+    seen: set[str] = {front.strip().lower() for front in existing_fronts}
     for raw in parsed.cards:
         try:
             card = GeneratedCard.model_validate(raw)
@@ -134,7 +153,8 @@ def parse_cards(payload: dict) -> list[GeneratedCard]:
         if looks_like_dosing(card.front) or looks_like_dosing(card.back):
             continue
         # One conversation circling the same confusion shouldn't spend three
-        # of the five seats on it.
+        # of the five seats on it — and a card already on record from an
+        # earlier session shouldn't be written a second time either.
         key = card.front.lower()
         if key in seen:
             continue
@@ -144,9 +164,13 @@ def parse_cards(payload: dict) -> list[GeneratedCard]:
     return kept[:MAX_CARDS]
 
 
-def generate(transcript: list[Turn], *, model: str | None = None) -> list[GeneratedCard]:
+def generate(
+    transcript: list[Turn], *, model: str | None = None, existing_fronts: list[str] = ()
+) -> list[GeneratedCard]:
     """The cards this conversation earned, possibly none. Raises LLMError."""
     if not transcript:
         return []
-    payload = complete_json(SYSTEM_PROMPT, build_user_prompt(transcript), model=model)
-    return parse_cards(payload)
+    payload = complete_json(
+        SYSTEM_PROMPT, build_user_prompt(transcript, existing_fronts), model=model
+    )
+    return parse_cards(payload, existing_fronts)

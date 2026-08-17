@@ -326,8 +326,17 @@ def end_chat(
     cards_added = 0
 
     if is_configured() and payload.messages:
+        # Every chat_gap card this reader has ever earned, from any earlier
+        # session — the model reads the same transcript-shaped confusion
+        # afresh each time, so without this it can write the same card twice
+        # in different words. See app/chat_cards.py.
+        existing_fronts = list(
+            db.scalars(select(ChatCard.front).where(ChatCard.user_id == profile.id))
+        )
         try:
-            generated = chat_cards.generate(_transcript(payload.messages), model=model)
+            generated = chat_cards.generate(
+                _transcript(payload.messages), model=model, existing_fronts=existing_fronts
+            )
         except LLMError as exc:
             log.info("no cards from chat session for %s: %s", profile.id, exc)
             generated = []
