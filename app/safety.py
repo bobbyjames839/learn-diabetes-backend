@@ -20,8 +20,16 @@ import re
 # legitimate mechanism text, which is a real cost: an explanation of why
 # rapid-acting insulin takes fifteen minutes to work is the whole point of the
 # app, and it is made of the same words as a dosing instruction.
+#
+# "bolus" is deliberately left out of _VERB even though it can be used as one
+# ("you should bolus 3 units") — it is also in _AMOUNT, and "bolus insulin" is
+# ordinary mechanism vocabulary in this app (basal vs. bolus is a core topic).
+# With "bolus" in both lists, a sentence as plain as "carbohydrate you ate,
+# which needs bolus insulin to match it" reads as "you ... bolus ... insulin"
+# and trips as a dosing instruction. The other imperative verbs below still
+# catch a real "you should bolus/give/take 3 units" instruction.
 _VERB = (
-    r"take|takes|inject|give|dose|bolus|correct|correction|"
+    r"take|takes|inject|give|dose|correct|correction|"
     r"increase|decrease|reduce|adjust|lower|raise"
 )
 _AMOUNT = r"unit|units|dose|doses|basal|bolus|ratio|insulin"
