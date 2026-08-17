@@ -96,6 +96,24 @@ def complete_json(
     )
 
 
+def _system_message(system: str, model: str) -> dict:
+    """The system message, cached when the model can use it.
+
+    A chat session resends this same block on every turn — the profile,
+    mastery ratings and the reader's last 20 answers rarely change turn to
+    turn — so marking it cacheable turns every turn after the first into a
+    near-free prefix instead of a full reprocess. OpenRouter passes
+    `cache_control` straight through to Anthropic; asking for it on a
+    provider that ignores the field costs nothing.
+    """
+    if not model.startswith("anthropic/"):
+        return {"role": "system", "content": system}
+    return {
+        "role": "system",
+        "content": [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+    }
+
+
 def complete_json_chat(
     system: str,
     messages: list[dict],
@@ -114,9 +132,10 @@ def complete_json_chat(
     if not settings.openrouter_api_key:
         raise LLMNotConfigured("OPENROUTER_API_KEY is not set.")
 
+    resolved_model = model or settings.question_model
     payload = {
-        "model": model or settings.question_model,
-        "messages": [{"role": "system", "content": system}, *messages],
+        "model": resolved_model,
+        "messages": [_system_message(system, resolved_model), *messages],
         "temperature": temperature,
         "response_format": {"type": "json_object"},
         # Without this the provider's own default applies, which can be small
@@ -214,9 +233,10 @@ def stream_json_chat(
     if not settings.openrouter_api_key:
         raise LLMNotConfigured("OPENROUTER_API_KEY is not set.")
 
+    resolved_model = model or settings.question_model
     payload = {
-        "model": model or settings.question_model,
-        "messages": [{"role": "system", "content": system}, *messages],
+        "model": resolved_model,
+        "messages": [_system_message(system, resolved_model), *messages],
         "temperature": temperature,
         "response_format": {"type": "json_object"},
         "max_tokens": settings.llm_max_tokens,
