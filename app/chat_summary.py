@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 from app import mastery
 from app.chat import Turn
 from app.llm import clean_model_text, complete_json
-from app.safety import looks_like_dosing
+from app.safety import looks_like_dosing_instruction
 
 # Short, sentence-ready phrasing for each topic a reader can pick — distinct
 # from `chat.TOPIC_BRIEFS`, which is written to brief the *model*, not to read
@@ -118,7 +118,7 @@ def parse_summary(payload: dict) -> GeneratedSummary | None:
         parsed = GeneratedSummary.model_validate(payload)
     except ValidationError:
         return None
-    if looks_like_dosing(parsed.headline) or looks_like_dosing(parsed.summary):
+    if looks_like_dosing_instruction(parsed.headline) or looks_like_dosing_instruction(parsed.summary):
         return None
     return parsed
 

@@ -26,7 +26,7 @@ from app.chat import Turn
 from app.llm import clean_model_text, complete_json
 # The shared dosing backstop. A card and a check question are the two things a
 # model writes straight to the reader, and both go through it — see app/safety.py.
-from app.safety import looks_like_dosing
+from app.safety import looks_like_dosing, looks_like_dosing_instruction  # noqa: F401 — looks_like_dosing re-exported for tests
 
 # Five is the ceiling on what one conversation may add. A session that produced
 # more than five genuinely new confusions did not; it produced a model padding.
@@ -150,7 +150,7 @@ def parse_cards(payload: dict, existing_fronts: list[str] = ()) -> list[Generate
             continue
         if not card.front or not card.back:
             continue
-        if looks_like_dosing(card.front) or looks_like_dosing(card.back):
+        if looks_like_dosing_instruction(card.front) or looks_like_dosing_instruction(card.back):
             continue
         # One conversation circling the same confusion shouldn't spend three
         # of the five seats on it — and a card already on record from an

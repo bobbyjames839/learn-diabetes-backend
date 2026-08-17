@@ -39,7 +39,7 @@ from app.llm import (
     parse_json_content,
     stream_json_chat,
 )
-from app.safety import looks_like_dose_question, looks_like_dosing, looks_like_dosing_instruction
+from app.safety import asks_for_dose_amount, looks_like_dosing_instruction
 from app.schemas import (
     OnboardingContentPreference,
     OnboardingFocus,
@@ -470,15 +470,22 @@ def _check_is_safe(check: ChatCheck) -> bool:
     these would you do next" is a natural way to write a quiz and a dosing
     suggestion at the same time. A check that trips this is dropped and the
     reply is shown without it — the teaching is still worth reading.
+
+    `asks_for_dose_amount` on the question is deliberately the narrow,
+    no-number interrogative check ("how much would you take") rather than the
+    broader `looks_like_dosing` shape: a factual question like "how long
+    after you inject insulin does it start working" reads the same as an
+    instruction to that shape and is exactly the kind of question this app
+    exists to ask. If a dosing suggestion is framed as multiple-choice, its
+    options are specific amounts, which `looks_like_dosing_instruction`
+    catches directly.
     """
-    if looks_like_dose_question(check.question):
+    if asks_for_dose_amount(check.question):
         return False
-    # An option is half a question — "3 units" as something to pick is the same
-    # suggestion as asking for it — so both halves get the stricter test too.
     for option in check.options:
-        if looks_like_dose_question(option.text):
+        if looks_like_dosing_instruction(option.text):
             return False
-        if looks_like_dosing(option.response):
+        if looks_like_dosing_instruction(option.response):
             return False
     return True
 
