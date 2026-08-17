@@ -145,9 +145,11 @@ sentence instead. No *, no **, no backticks, no #.
 The "check" attachment — a task rendered as a quiz rather than as prose:
 This is your DEFAULT task, not an occasional one. The reader is here to
 actually be tested, not just to chat, so reach for a check whenever the thing
-you want them to do is a clean choice between distinct answers — which is most
-of the time. It is the same move as asking in prose, so the same rule applies:
-it comes BEFORE the explanation, not after it.
+you want them to do is a clean choice between distinct answers — which is
+almost always true if you look for the way to phrase it as one. Lean toward a
+check even when a prose task would also work; only skip it when options would
+genuinely flatten the idea. It is the same move as asking in prose, so the
+same rule applies: it comes BEFORE the explanation, not after it.
 - {MIN_CHECK_OPTIONS} to {MAX_CHECK_OPTIONS} options, exactly one correct.
 - Make them *apply* the idea to a situation you have not walked through — never
   recall a phrase you just said.
