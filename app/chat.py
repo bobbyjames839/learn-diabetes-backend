@@ -502,22 +502,23 @@ def parse_reply(payload: dict) -> ChatReply | None:
     if parsed is None:
         return None
 
-    # Cleaned, not rejected: leaked provider scaffolding and stray markdown
-    # asterisks are noise around a reply that is otherwise worth reading, and
-    # this text is rendered verbatim.
-    text = clean_model_text(parsed.reply)
+    # Cleaned, not rejected: leaked provider scaffolding is noise around a
+    # reply that is otherwise worth reading. Emphasis markers are left in —
+    # the chat is the one screen that renders `*word*` as bold rather than
+    # showing literal asterisks.
+    text = clean_model_text(parsed.reply, strip_emphasis=False)
     if not text:
         return None
     parsed.reply = text
     if parsed.profile_update and not parsed.profile_update.fields():
         parsed.profile_update = None
     if parsed.check:
-        # The check is rendered as plain text too — its question and every
-        # option and response.
-        parsed.check.question = clean_model_text(parsed.check.question)
+        # The check is rendered the same way — its question and every option
+        # and response.
+        parsed.check.question = clean_model_text(parsed.check.question, strip_emphasis=False)
         for option in parsed.check.options:
-            option.text = clean_model_text(option.text)
-            option.response = clean_model_text(option.response)
+            option.text = clean_model_text(option.text, strip_emphasis=False)
+            option.response = clean_model_text(option.response, strip_emphasis=False)
         if not _check_is_safe(parsed.check):
             parsed.check = None
     # A turn that sets another task is not a turn that ends the session,
@@ -535,7 +536,7 @@ def _fallback_reply(content: str) -> str | None:
     It skips the schema that normally carries the safety check on a "check",
     so it gets the same dosing check a check's text gets before it is trusted.
     """
-    text = clean_model_text(content)
+    text = clean_model_text(content, strip_emphasis=False)
     if not text or looks_like_dosing(text):
         return None
     return text[:MAX_REPLY_LENGTH]

@@ -61,16 +61,21 @@ _EMPHASIS = re.compile(r"(?<!\w)(\*{1,3})(\S(?:.*?\S)?)\1(?!\w)", re.DOTALL)
 _BLANK_RUN = re.compile(r"\n{3,}")
 
 
-def clean_model_text(text: str) -> str:
+def clean_model_text(text: str, *, strip_emphasis: bool = True) -> str:
     """Model output as prose, for the screens that render it as plain text.
 
     Two things the reader should never see: provider scaffolding that leaked
     into a generated string, and markdown emphasis in text nothing will parse
     as markdown. Neither is worth failing a reply over — the sentence around
     them is fine — so this cleans rather than rejects.
+
+    `strip_emphasis=False` is for the one screen that *does* parse it: the
+    tutor chat renders `*word*` as bold rather than showing literal asterisks,
+    so the markers are left in place for it to find.
     """
     cleaned = _SCAFFOLD_TAG.sub("", text)
-    cleaned = _EMPHASIS.sub(r"\2", cleaned)
+    if strip_emphasis:
+        cleaned = _EMPHASIS.sub(r"\2", cleaned)
     return _BLANK_RUN.sub("\n\n", cleaned).strip()
 
 

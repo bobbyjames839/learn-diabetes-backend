@@ -118,8 +118,8 @@ class TestParseReply:
         assert parsed.profile_update is None
 
     def test_the_reply_reaches_the_reader_as_plain_prose(self):
-        # Both things a real turn arrived with: provider scaffolding on the end
-        # and markdown emphasis in a page that renders none.
+        # Provider scaffolding is stripped. Markdown emphasis survives — the
+        # chat is the one screen that renders `*word*` as bold.
         parsed = parse_reply(
             {
                 "reply": "You said *just* the potato.\n\n"
@@ -127,9 +127,9 @@ class TestParseReply:
             }
         )
         assert parsed is not None
-        assert parsed.reply == "You said just the potato."
+        assert parsed.reply == "You said *just* the potato."
 
-    def test_a_check_is_cleaned_too(self):
+    def test_a_check_is_cleaned_too_but_keeps_emphasis(self):
         parsed = parse_reply(
             {
                 "reply": "Have a go.",
@@ -138,7 +138,7 @@ class TestParseReply:
         )
         assert parsed is not None
         assert parsed.check is not None
-        assert parsed.check.question == "What happens to glucose?"
+        assert parsed.check.question == "What happens to *glucose*?"
 
     def test_an_empty_reply_is_unusable(self):
         assert parse_reply({"reply": "   "}) is None
